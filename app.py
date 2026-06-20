@@ -14,6 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import networkx as nx
 import database as db
+import auth
 
 from phishing_forensics import (
     extract_url_features,
@@ -38,7 +39,7 @@ def load_css():
     else:
         st.warning("Custom stylesheet (styles.css) not found. Falling back to default layout.")
 
-load_css()
+
 
 # ==========================================
 # MACHINE LEARNING MODELS LOADING
@@ -156,12 +157,21 @@ def generate_ipc_references(category):
 def render_citizen_portal():
     st.markdown("<h1>🛡️ CyberShield Citizen Complaint Portal</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#a1a1aa;'>Report cybercrimes directly to Law Enforcement. Complaints are processed using AI models for fast allocation.</p>", unsafe_allow_html=True)
-    
+
+    # Citizen tabs: File Complaint + My Cases (if logged in)
+    if auth.is_authenticated() and auth.get_current_role() == "citizen":
+        citizen_tab = st.radio("Select", ["📝 File New Complaint", "📋 My Complaints"], horizontal=True)
+        if citizen_tab == "📋 My Complaints":
+            _render_my_cases()
+            return
+
     st.markdown("<div class='cyber-card'>", unsafe_allow_html=True)
     st.subheader("1. Reporter Information")
+    # Auto-fill name for logged-in citizens
+    default_name = auth.get_current_user()["full_name"] if auth.is_authenticated() else ""
     col1, col2 = st.columns(2)
     with col1:
-        citizen_name = st.text_input("Full Name", placeholder="e.g. Tarun Gupta")
+        citizen_name = st.text_input("Full Name", value=default_name, placeholder="e.g. john doe")
     with col2:
         contact_no = st.text_input("Mobile Number", placeholder="e.g. +91 99999 99999")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -263,6 +273,7 @@ def render_citizen_portal():
             case_id = f"CS-2026-{new_num:04d}"
             
             # 4. Insert into database
+            submitted_by = auth.get_current_username() if auth.is_authenticated() else None
             db.create_case(
                 case_id=case_id,
                 citizen_name=citizen_name,
@@ -277,7 +288,8 @@ def render_citizen_portal():
                 fraud_url=fraud_url,
                 transaction_details=transaction_details,
                 phone_number=phone_number,
-                social_media_username=social_media_username
+                social_media_username=social_media_username,
+                submitted_by=submitted_by
             )
             
             # Insert parsed evidence entities
@@ -319,6 +331,37 @@ def render_citizen_portal():
 
 
 # ==========================================
+# CITIZEN: MY CASES TRACKER
+# ==========================================
+def _render_my_cases():
+    username = auth.get_current_username()
+    my_cases = db.get_citizen_cases(username)
+    st.subheader("My Filed Complaints")
+    if my_cases.empty:
+        st.info("You have not filed any complaints yet.")
+    else:
+        for _, row in my_cases.iterrows():
+            priority_color = '#ef4444' if row['priority'] == 'High' else '#f59e0b' if row['priority'] == 'Medium' else '#3b82f6'
+            st.markdown(f"""
+            <div class="cyber-card" style="border-left: 5px solid {priority_color};">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 1.1rem; font-weight: 700; color: #ffffff;">{row['case_id']}</span>
+                    <span>
+                        <span class="priority-badge-{row['priority'].lower()}">{row['priority']}</span>
+                        <span class="status-badge-{row['status'].lower().replace(' ', '')}">{row['status']}</span>
+                    </span>
+                </div>
+                <div style="margin-top: 8px; font-size: 0.9rem;">
+                    <strong>Category:</strong> <span style="color:#38bdf8;">{row['category']}</span> |
+                    <strong>Officer:</strong> {row['officer_name']} |
+                    <strong>Filed:</strong> {row['created_at']}
+                </div>
+                <p style="margin-top: 8px; color:#cbd5e1; font-style:italic;">"{row['complaint_desc'][:150]}..."</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# ==========================================
 # OFFICER CONTROL ROOM
 # ==========================================
 def render_officer_portal():
@@ -340,8 +383,26 @@ def render_officer_portal():
     )
 
     df_cases = db.get_all_cases()
+
+    # RBAC: Officers see only their assigned cases in case management
+    role = auth.get_current_role()
+    username = auth.get_current_username()
+    if role == "officer":
+        assigned_ids = db.get_officer_assigned_cases(username)
+        if assigned_ids:
+            df_cases_filtered = df_cases[df_cases["case_id"].isin(assigned_ids)]
+        else:
+            df_cases_filtered = df_cases.head(0)
+    else:
+        df_cases_filtered = df_cases
+
     df_suspects = db.get_suspect_intelligence()
 
+    _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects)
+
+
+def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
+    """Shared tab content renderer used by both officer and admin portals."""
     # ----------------------------------------------------
     # TAB 1: EXECUTIVE DASHBOARD (Modules 7, 9 & 10)
     # ----------------------------------------------------
@@ -445,7 +506,7 @@ def render_officer_portal():
         filter_priority = st.selectbox("Filter Priority", ["All", "High", "Medium", "Low"])
         filter_status = st.selectbox("Filter Status", ["All", "Open", "Under Investigation", "Escalated", "Closed"])
         
-        df_filtered = df_cases.copy()
+        df_filtered = df_cases_filtered.copy()
         if filter_priority != "All":
             df_filtered = df_filtered[df_filtered["priority"] == filter_priority]
         if filter_status != "All":
@@ -515,6 +576,7 @@ def render_officer_portal():
                 
                 if st.button("Update Case Records", type="primary"):
                     db.update_case_status(selected_case_id, new_status, assigned_officer, notes)
+                    auth.audit_case_update(selected_case_id, f"Status: {new_status}, Officer: {assigned_officer}")
                     st.success(f"Case {selected_case_id} has been updated successfully!")
                     st.rerun()
 
@@ -1065,29 +1127,220 @@ Cyber Crime Police
 
 
 # ==========================================
+# LOGIN PAGE
+# ==========================================
+def render_login_page():
+    st.markdown("""
+    <div class='login-container'>
+        <div class='login-header'>
+            <span class='lock-icon'>🛡️</span>
+            <h1>CyberShield</h1>
+            <p>Police Intelligence Portal</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_pad1, col_form, col_pad2 = st.columns([1, 2, 1])
+    with col_form:
+        username = st.text_input("Username", placeholder="Enter your username", key="login_user")
+        password = st.text_input("Password", type="password", placeholder="Enter your password", key="login_pass")
+
+        if st.button("🔐 Secure Login", type="primary", use_container_width=True):
+            success, message = auth.login_user(username, password)
+            if success:
+                st.rerun()
+            else:
+                st.markdown(f"<div class='login-error'>{message}</div>", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#64748b; font-size:0.8rem;'>Default Admin: <code>admin</code> / <code>CyberShield@2026</code><br>Default Officer: <code>insp.vikram</code> / <code>Officer@2026</code></p>", unsafe_allow_html=True)
+
+
+# ==========================================
+# AUTHENTICATED SIDEBAR
+# ==========================================
+def render_authenticated_sidebar():
+    user = auth.get_current_user()
+    role = user["role"]
+    badge_class = f"role-badge-{role}"
+
+    st.sidebar.markdown(f"""
+    <div class='user-info-card'>
+        <div class='user-name'>{user['full_name']}</div>
+        <span class='{badge_class}'>{role}</span>
+        <div class='user-meta'>Logged in: {user['login_time'][:16] if user['login_time'] else 'N/A'}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.sidebar.button("🚪 Secure Logout", use_container_width=True):
+        auth.logout_user()
+        st.rerun()
+
+    st.sidebar.markdown("---")
+
+
+# ==========================================
+# ADMIN PORTAL
+# ==========================================
+def render_admin_portal():
+    st.markdown("<h1>🛡️ CyberShield Admin Command Center</h1>", unsafe_allow_html=True)
+
+    admin_tab = st.sidebar.radio(
+        "Admin Modules",
+        [
+            "📊 Executive Dashboard",
+            "🗂️ Case Management Board",
+            "🔍 Cyber Crime Complaint Analyzer",
+            "💬 Scam Message Detector",
+            "🔗 Phishing URL Forensic Lab",
+            "👤 Suspect Intelligence Network",
+            "🤖 AI Legal & Forensic Assistant",
+            "👥 User Management",
+            "📋 Audit Logs",
+            "🔑 Case Assignments"
+        ]
+    )
+
+    # Admin-only tabs
+    if admin_tab == "👥 User Management":
+        render_user_management()
+    elif admin_tab == "📋 Audit Logs":
+        render_audit_logs()
+    elif admin_tab == "🔑 Case Assignments":
+        render_case_assignments()
+    else:
+        # Reuse officer portal logic for shared operational tabs
+        # We call the internals directly by simulating the tab selection
+        _render_officer_tab_content(admin_tab)
+
+
+def _render_officer_tab_content(officer_tab):
+    """Renders officer tab content for a given tab name (used by admin portal)."""
+    df_cases = db.get_all_cases()
+    df_cases_filtered = df_cases  # Admin sees all
+    df_suspects = db.get_suspect_intelligence()
+    _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects)
+
+
+def render_user_management():
+    st.subheader("User Account Management")
+    df_users = db.get_all_users()
+    if not df_users.empty:
+        st.dataframe(df_users, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Create New User")
+    col1, col2 = st.columns(2)
+    with col1:
+        new_username = st.text_input("Username", key="new_user")
+        new_password = st.text_input("Password", type="password", key="new_pass")
+    with col2:
+        new_fullname = st.text_input("Full Name", key="new_name")
+        new_role = st.selectbox("Role", ["citizen", "officer", "admin"], key="new_role")
+    new_badge = st.text_input("Badge Number (officers only)", key="new_badge")
+
+    if st.button("Create User", type="primary"):
+        if not new_username or not new_password or not new_fullname:
+            st.error("All fields are required.")
+        elif db.get_user_by_username(new_username.strip().lower()):
+            st.error("Username already exists.")
+        else:
+            hashed = auth.hash_password(new_password)
+            db.create_user(new_username.strip().lower(), hashed, new_role, new_fullname, new_badge)
+            auth.audit_user_created(new_username.strip().lower(), new_role)
+            st.success(f"User '{new_username}' created as {new_role}!")
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Reset User Password")
+    if not df_users.empty:
+        reset_user = st.selectbox("Select User", df_users["username"].tolist(), key="reset_user")
+        reset_pw = st.text_input("New Password", type="password", key="reset_pw")
+        if st.button("Reset Password"):
+            if reset_pw:
+                db.update_user_password(reset_user, auth.hash_password(reset_pw))
+                st.success(f"Password reset for '{reset_user}'.")
+
+
+def render_audit_logs():
+    st.subheader("Security Audit Trail")
+    df_logs = db.get_audit_logs(500)
+    if df_logs.empty:
+        st.info("No audit events recorded.")
+    else:
+        action_filter = st.selectbox("Filter by Action", ["All"] + df_logs["action"].unique().tolist())
+        if action_filter != "All":
+            df_logs = df_logs[df_logs["action"] == action_filter]
+        st.dataframe(df_logs, use_container_width=True)
+
+
+def render_case_assignments():
+    st.subheader("Case-Officer Assignment Control")
+    df_assignments = db.get_case_assignments()
+    if not df_assignments.empty:
+        st.dataframe(df_assignments, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Assign Officer to Case")
+    df_cases = db.get_all_cases()
+    df_users = db.get_all_users()
+    officers = df_users[df_users["role"].isin(["officer", "admin"])]["username"].tolist() if not df_users.empty else []
+
+    if not df_cases.empty and officers:
+        assign_case = st.selectbox("Select Case", df_cases["case_id"].tolist(), key="assign_case")
+        assign_officer = st.selectbox("Select Officer", officers, key="assign_officer")
+        if st.button("Assign", type="primary"):
+            db.assign_case_to_officer(assign_case, assign_officer, auth.get_current_username())
+            db.log_audit(auth.get_current_username(), "admin", "CASE_ASSIGNED",
+                         target_resource=assign_case, details=f"Assigned to {assign_officer}")
+            st.success(f"Case {assign_case} assigned to {assign_officer}!")
+            st.rerun()
+    else:
+        st.info("No cases or officers available.")
+
+
+
+# ==========================================
 # APP MAIN CONTROL FLOW
 # ==========================================
 def main():
+    # Initialize auth session
+    auth.init_session()
+    auth.check_session_timeout()
+
+    # Load CSS
+    load_css()
+
+    # Sidebar branding
     st.sidebar.markdown("<h2 style='text-align: center; color: #06b6d4; margin-bottom: 0;'>🛡️ CyberShield</h2>", unsafe_allow_html=True)
     st.sidebar.markdown("<p style='text-align: center; color: #64748b; font-size: 0.85rem; margin-top: 0;'>POLICE INTELLIGENCE PORTAL</p>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
 
-    # Portal Role Selector (Wow Feature 1)
-    portal_role = st.sidebar.selectbox(
-        "Select Portal View",
-        ["Officer Control Room", "Citizen Intake Portal"]
-    )
-    st.sidebar.markdown("---")
+    # AUTH GATE — if not logged in, show login page only
+    if not auth.is_authenticated():
+        render_login_page()
+        st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("<p style='text-align: center; color: #475569; font-size: 0.75rem;'>CyberShield v3.0 Police Edition<br>© 2026 Ministry of Law Enforcement</p>", unsafe_allow_html=True)
+        return
 
-    if portal_role == "Citizen Intake Portal":
+    # AUTHENTICATED — show user info + logout in sidebar
+    render_authenticated_sidebar()
+
+    role = auth.get_current_role()
+
+    if role == "citizen":
         render_citizen_portal()
-    else:
+    elif role == "officer":
         render_officer_portal()
+    elif role == "admin":
+        render_admin_portal()
 
     # Footer
-    st.sidebar.markdown("<br><br><br><br>", unsafe_allow_html=True)
+    st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
-    st.sidebar.markdown("<p style='text-align: center; color: #475569; font-size: 0.75rem;'>CyberShield v2.5 Police Edition<br>© 2026 Ministry of Law Enforcement</p>", unsafe_allow_html=True)
+    st.sidebar.markdown("<p style='text-align: center; color: #475569; font-size: 0.75rem;'>CyberShield v3.0 Police Edition<br>© 2026 Ministry of Law Enforcement</p>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
+
