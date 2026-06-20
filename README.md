@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
 
 # 🛡️ CyberShield — Police Edition
 
@@ -575,4 +575,3 @@ This project is developed as an academic prototype for cybercrime investigation 
 **CyberShield v2.5 Police Edition** · Built with 🐍 Python & ❤️ for Law Enforcement
 
 </div>
-]]>
