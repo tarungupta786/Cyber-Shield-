@@ -32,7 +32,9 @@ def init_db():
             fraud_url TEXT DEFAULT '',
             transaction_details TEXT DEFAULT '',
             phone_number TEXT DEFAULT '',
-            social_media_username TEXT DEFAULT ''
+            social_media_username TEXT DEFAULT '',
+            submitted_by TEXT DEFAULT NULL,
+            citizen_id INTEGER DEFAULT NULL
         )
     """)
     
@@ -241,7 +243,7 @@ def init_db():
 # ==========================================
 
 def create_case(case_id, citizen_name, complaint_desc, category, severity_score, risk_score, priority, status, 
-                sms_text="", email_text="", fraud_url="", transaction_details="", phone_number="", social_media_username="", officer_name="Unassigned", submitted_by=None):
+                sms_text="", email_text="", fraud_url="", transaction_details="", phone_number="", social_media_username="", officer_name="Unassigned", submitted_by=None, citizen_id=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -249,10 +251,10 @@ def create_case(case_id, citizen_name, complaint_desc, category, severity_score,
     cursor.execute("""
         INSERT INTO cases (
             case_id, citizen_name, complaint_desc, category, severity_score, risk_score, priority, status, officer_name,
-            created_at, sms_text, email_text, fraud_url, transaction_details, phone_number, social_media_username, submitted_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, sms_text, email_text, fraud_url, transaction_details, phone_number, social_media_username, submitted_by, citizen_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (case_id, citizen_name, complaint_desc, category, severity_score, risk_score, priority, status, officer_name,
-          created_at, sms_text, email_text, fraud_url, transaction_details, phone_number, social_media_username, submitted_by))
+          created_at, sms_text, email_text, fraud_url, transaction_details, phone_number, social_media_username, submitted_by, citizen_id))
     
     conn.commit()
     conn.close()
@@ -502,6 +504,13 @@ def get_citizen_cases(username):
     """Returns cases submitted by this citizen."""
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM cases WHERE submitted_by = ? ORDER BY created_at DESC", conn, params=(username,))
+    conn.close()
+    return df
+
+def get_cases_by_citizen_id(citizen_id):
+    """Returns cases submitted by this citizen_id."""
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM cases WHERE citizen_id = ? ORDER BY created_at DESC", conn, params=(citizen_id,))
     conn.close()
     return df
 

@@ -295,34 +295,34 @@ def run_rule_engine(url, features):
     
     # 1. Invalid Protocol
     if features[15] > 0:
-        rules_triggered.append("❌ Invalid/Malformed Protocol Anomaly (e.g. htttps, hxxps)")
+        rules_triggered.append("[MALFORMED PROTOCOL] Invalid/Malformed Protocol Anomaly (e.g. htttps, hxxps)")
         rule_score += 0.25
         
     # 2. Raw IP Address
     if features[6] > 0:
-        rules_triggered.append("❌ Hostname resolves directly to Raw IP Address (High Risk)")
+        rules_triggered.append("[RAW IP] Hostname resolves directly to Raw IP Address (High Risk)")
         rule_score += 0.30
         
     # 3. Brand Spoofing
     if features[14] >= 0.70:
-        rules_triggered.append(f"❌ Brand Spoofing typosquatting detected (Similarity: {features[14]*100:.1f}%)")
+        rules_triggered.append(f"[BRAND SPOOFING] Brand Spoofing typosquatting detected (Similarity: {features[14]*100:.1f}%)")
         rule_score += 0.35
         
     # 4. Suspicious TLD
     reg_domain = get_registered_domain(url)
     has_susp_tld = any(reg_domain.endswith(tld) for tld in SUSPICIOUS_TLDS)
     if has_susp_tld:
-        rules_triggered.append(f"❌ Suspicious Top-Level Domain (TLD) resolving")
+        rules_triggered.append(f"[SUSPICIOUS TLD] Suspicious Top-Level Domain (TLD) resolving")
         rule_score += 0.15
         
     # 5. Excessive Subdomains
     if features[9] > 2:
-        rules_triggered.append(f"❌ Excessive subdomain layering ({int(features[9])} subdomains)")
+        rules_triggered.append(f"[SUBDOMAINS] Excessive subdomain layering ({int(features[9])} subdomains)")
         rule_score += 0.15
         
     # 6. Credential Harvesting Keywords
     if features[11] > 0:
-        rules_triggered.append(f"❌ Credential/scam keywords detected in URL path ({int(features[11])} keywords)")
+        rules_triggered.append(f"[KEYWORDS] Credential/scam keywords detected in URL path ({int(features[11])} keywords)")
         rule_score += 0.15
         
     # 7. URL Shorteners
@@ -330,12 +330,12 @@ def run_rule_engine(url, features):
     anomaly_score, original, normalized, parsed = check_protocol_anomaly(url)
     hostname = parsed.hostname or ""
     if hostname.lower() in URL_SHORTENERS:
-        rules_triggered.append("❌ URL shortener service masking final destination")
+        rules_triggered.append("[SHORTENER] URL shortener service masking final destination")
         rule_score += 0.20
         
     # 8. Unicode Obfuscation
     if "xn--" in hostname.lower() or not all(ord(c) < 128 for c in hostname):
-        rules_triggered.append("❌ Unicode IDN Homograph Obfuscation detected (non-ASCII symbols)")
+        rules_triggered.append("[UNICODE] Unicode IDN Homograph Obfuscation detected (non-ASCII symbols)")
         rule_score += 0.25
         
     rule_score = min(1.0, rule_score)
@@ -426,15 +426,15 @@ def run_hybrid_forensics(url, ml_prob):
         
     # Recommended Action
     if threat_level == "Safe":
-        action = "✅ Whitelisted or highly reputable domain. No security action required."
+        action = "[SAFE] Whitelisted or highly reputable domain. No security action required."
     elif threat_level == "Low Risk":
-        action = "ℹ️ Domain appears safe, but maintain standard vigilance."
+        action = "[INFO] Domain appears safe, but maintain standard vigilance."
     elif threat_level == "Suspicious":
-        action = "⚠️ Keep domain under active observation. Inspect redirects or suspicious activity logs."
+        action = "[WARNING] Keep domain under active observation. Inspect redirects or suspicious activity logs."
     elif threat_level == "High Risk":
-        action = "🚨 Alert cyber crime unit. Issue warning alert to personnel accessing this domain."
+        action = "[ALERT] Alert cyber crime unit. Issue warning alert to personnel accessing this domain."
     else:
-        action = "🛑 IMMEDIATE ENFORCEMENT ACTION! Section 91 DNS blocking request. Initiate domain takedown protocol."
+        action = "[IMMEDIATE ENFORCEMENT ACTION] Section 91 DNS blocking request. Initiate domain takedown protocol."
         
     return {
         "original_url": original,
