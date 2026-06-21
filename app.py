@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import re
 import pickle
 import math
@@ -15,6 +18,7 @@ import plotly.graph_objects as go
 import networkx as nx
 import database as db
 import auth
+import auth_ui
 
 from phishing_forensics import (
     extract_url_features,
@@ -26,9 +30,9 @@ from train_phishing_model import train_and_evaluate
 # Set Streamlit Page Configuration
 st.set_page_config(
     page_title="CyberShield Police Edition",
-    page_icon="🛡️",
+    page_icon=None,
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded" if st.session_state.get("authenticated", False) else "collapsed"
 )
 
 # Load Custom CSS Styling
@@ -36,6 +40,20 @@ def load_css():
     if os.path.exists("styles.css"):
         with open("styles.css", "r") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+        # Inject ambient dots (background gradients now handled via body::before/::after in CSS)
+        dots_html = """
+        <div class="ambient-dots" aria-hidden="true">
+            <div class="ambient-dot dot-cyan" style="top: 15%; left: 10%; width: 3px; height: 3px; animation-duration: 6s; animation-delay: 0s;"></div>
+            <div class="ambient-dot dot-green" style="top: 45%; left: 85%; width: 4px; height: 4px; animation-duration: 8s; animation-delay: -2s;"></div>
+            <div class="ambient-dot dot-violet" style="top: 75%; left: 25%; width: 3px; height: 3px; animation-duration: 5s; animation-delay: -1s;"></div>
+            <div class="ambient-dot dot-cyan" style="top: 30%; left: 70%; width: 2px; height: 2px; animation-duration: 7s; animation-delay: -3s;"></div>
+            <div class="ambient-dot dot-green" style="top: 80%; left: 60%; width: 3px; height: 3px; animation-duration: 6s; animation-delay: -1.5s;"></div>
+            <div class="ambient-dot dot-violet" style="top: 10%; left: 90%; width: 4px; height: 4px; animation-duration: 9s; animation-delay: -4s;"></div>
+            <div class="ambient-dot dot-cyan" style="top: 60%; left: 40%; width: 3px; height: 3px; animation-duration: 8s; animation-delay: -0.5s;"></div>
+            <div class="ambient-dot dot-violet" style="top: 90%; left: 80%; width: 3px; height: 3px; animation-duration: 7s; animation-delay: -2.5s;"></div>
+        </div>
+        """
+        st.markdown(dots_html, unsafe_allow_html=True)
     else:
         st.warning("Custom stylesheet (styles.css) not found. Falling back to default layout.")
 
@@ -155,15 +173,39 @@ def generate_ipc_references(category):
 # CITIZEN INTAKE PORTAL
 # ==========================================
 def render_citizen_portal():
-    st.markdown("<h1>🛡️ CyberShield Citizen Complaint Portal</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#a1a1aa;'>Report cybercrimes directly to Law Enforcement. Complaints are processed using AI models for fast allocation.</p>", unsafe_allow_html=True)
+    if not auth.require_role(["citizen"]):
+        return
 
-    # Citizen tabs: File Complaint + My Cases (if logged in)
-    if auth.is_authenticated() and auth.get_current_role() == "citizen":
-        citizen_tab = st.radio("Select", ["📝 File New Complaint", "📋 My Complaints"], horizontal=True)
-        if citizen_tab == "📋 My Complaints":
-            _render_my_cases()
-            return
+    citizen_tab = st.sidebar.radio(
+        "Citizen Modules",
+        [
+            "File New Complaint",
+            "My Complaints",
+            "Report Phishing URL",
+            "Check Scam Message"
+        ]
+    )
+
+    if citizen_tab == "My Complaints":
+        _render_my_cases()
+        return
+    elif citizen_tab == "Report Phishing URL":
+        import pandas as pd
+        _render_officer_tabs("Phishing URL Forensic Lab", pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        return
+    elif citizen_tab == "Check Scam Message":
+        import pandas as pd
+        _render_officer_tabs("Scam Message Detector", pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        return
+
+    st.markdown("""
+    <div class="hero-glow-container">
+        <div class="icon-badge hero-icon"></div>
+        <h1 class="hero-title">Cyber<span style="color: var(--color-accent);">Shield</span></h1>
+        <div class="tagline">Citizen Complaint Portal</div>
+    </div>
+    <p style='color: var(--color-text-muted); margin-bottom: 24px;'>Report cybercrimes directly to Law Enforcement. Complaints are processed using AI models for fast allocation.</p>
+    """, unsafe_allow_html=True)
 
     st.markdown("<div class='cyber-card'>", unsafe_allow_html=True)
     st.subheader("1. Reporter Information")
@@ -274,6 +316,9 @@ def render_citizen_portal():
             
             # 4. Insert into database
             submitted_by = auth.get_current_username() if auth.is_authenticated() else None
+            user_record = db.get_user_by_username(submitted_by) if submitted_by else None
+            citizen_id = user_record["id"] if user_record else None
+            
             db.create_case(
                 case_id=case_id,
                 citizen_name=citizen_name,
@@ -289,7 +334,8 @@ def render_citizen_portal():
                 transaction_details=transaction_details,
                 phone_number=phone_number,
                 social_media_username=social_media_username,
-                submitted_by=submitted_by
+                submitted_by=submitted_by,
+                citizen_id=citizen_id
             )
             
             # Insert parsed evidence entities
@@ -308,8 +354,8 @@ def render_citizen_portal():
             st.balloons()
             
             st.markdown(f"""
-            <div class='glowing-alert' style='background: rgba(13, 148, 136, 0.15); border-left-color: #0d9488;'>
-                <h3 style='color: #0d9488; margin-top: 0;'>🛡️ Complaint Submitted Successfully!</h3>
+            <div class='glowing-alert'>
+                <h3 style='margin-top: 0;'>Complaint Submitted Successfully</h3>
                 <p>Your Complaint has been registered in the police central directory.</p>
                 <table style='width: 100%; border: none;'>
                     <tr>
@@ -318,14 +364,14 @@ def render_citizen_portal():
                     </tr>
                     <tr>
                         <td><strong>Assigned Category:</strong></td>
-                        <td><span style='background: #1e293b; padding: 4px 10px; border-radius: 6px;'>{predicted_category}</span></td>
+                        <td><span style='background: #141922; padding: 4px 10px; border-radius: 4px; font-family: "JetBrains Mono", monospace;'>{predicted_category}</span></td>
                     </tr>
                     <tr>
                         <td><strong>Auto-Assigned Priority:</strong></td>
                         <td><span class='priority-badge-{priority.lower()}'>{priority}</span></td>
                     </tr>
                 </table>
-                <p style='margin-bottom: 0; margin-top: 10px; font-size: 0.9rem; color: #a1a1aa;'>Please save your Case ID for future follow-up. An officer will be assigned shortly.</p>
+                <p style='margin-bottom: 0; margin-top: 10px; font-size: 0.9rem; color: #94A3B8;'>Please save your Case ID for future follow-up. An officer will be assigned shortly.</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -336,7 +382,12 @@ def render_citizen_portal():
 def _render_my_cases():
     username = auth.get_current_username()
     my_cases = db.get_citizen_cases(username)
-    st.subheader("My Filed Complaints")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+        <div class="icon-badge"></div>
+        <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">My Filed Complaints</h2>
+    </div>
+    """, unsafe_allow_html=True)
     if my_cases.empty:
         st.info("You have not filed any complaints yet.")
     else:
@@ -345,18 +396,18 @@ def _render_my_cases():
             st.markdown(f"""
             <div class="cyber-card" style="border-left: 5px solid {priority_color};">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-size: 1.1rem; font-weight: 700; color: #ffffff;">{row['case_id']}</span>
+                    <span style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;">{row['case_id']}</span>
                     <span>
                         <span class="priority-badge-{row['priority'].lower()}">{row['priority']}</span>
                         <span class="status-badge-{row['status'].lower().replace(' ', '')}">{row['status']}</span>
                     </span>
                 </div>
                 <div style="margin-top: 8px; font-size: 0.9rem;">
-                    <strong>Category:</strong> <span style="color:#38bdf8;">{row['category']}</span> |
-                    <strong>Officer:</strong> {row['officer_name']} |
-                    <strong>Filed:</strong> {row['created_at']}
+                    <strong>Category:</strong> <span style="color:#F1F5F9;">{row['category']}</span> |
+                    <strong>Officer:</strong> <span style="font-family: 'JetBrains Mono', monospace;">{row['officer_name']}</span> |
+                    <strong>Filed:</strong> <span style="font-family: 'JetBrains Mono', monospace;">{row['created_at']}</span>
                 </div>
-                <p style="margin-top: 8px; color:#cbd5e1; font-style:italic;">"{row['complaint_desc'][:150]}..."</p>
+                <p style="margin-top: 8px; color:#94A3B8; font-style:italic;">"{row['complaint_desc'][:150]}..."</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -365,20 +416,29 @@ def _render_my_cases():
 # OFFICER CONTROL ROOM
 # ==========================================
 def render_officer_portal():
-    st.markdown("<h1>🛡️ CyberShield Police Command Center</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#a1a1aa;'>AI-Powered Cybercrime Intelligence & Operations Console (Law Enforcement Access Only)</p>", unsafe_allow_html=True)
+    if not auth.require_role(["officer", "admin"]):
+        return
+
+    st.markdown("""
+    <div class="hero-glow-container">
+        <div class="icon-badge hero-icon"></div>
+        <h1 class="hero-title">Cyber<span style="color: var(--color-accent);">Shield</span></h1>
+        <div class="tagline">Police Command Center</div>
+    </div>
+    <p style='color: var(--color-text-muted); margin-bottom: 24px;'>AI-Powered Cybercrime Intelligence & Operations Console (Law Enforcement Access Only)</p>
+    """, unsafe_allow_html=True)
 
     # Secondary Navigation Sidebar
     officer_tab = st.sidebar.radio(
         "Operational Modules",
         [
-            "📊 Executive Dashboard",
-            "🗂️ Case Management Board",
-            "🔍 Cyber Crime Complaint Analyzer",
-            "💬 Scam Message Detector",
-            "🔗 Phishing URL Forensic Lab",
-            "👤 Suspect Intelligence Network",
-            "🤖 AI Legal & Forensic Assistant"
+            "Executive Dashboard",
+            "Case Management Board",
+            "Cyber Crime Complaint Analyzer",
+            "Scam Message Detector",
+            "Phishing URL Forensic Lab",
+            "Suspect Intelligence Network",
+            "AI Legal & Forensic Assistant"
         ]
     )
 
@@ -406,8 +466,13 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
     # ----------------------------------------------------
     # TAB 1: EXECUTIVE DASHBOARD (Modules 7, 9 & 10)
     # ----------------------------------------------------
-    if officer_tab == "📊 Executive Dashboard":
-        st.subheader("Operations Overview")
+    if officer_tab == "Executive Dashboard":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Operations Overview</h2>
+        </div>
+        """, unsafe_allow_html=True)
         
         # Metric Rows
         total_complaints = len(df_cases)
@@ -439,10 +504,17 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
                 cat_counts.columns = ["Category", "Count"]
                 fig1 = px.bar(
                     cat_counts, x="Count", y="Category", orientation="h",
-                    color="Count", color_continuous_scale="Viridis",
+                    color="Count", color_continuous_scale=[[0, "#0F1115"], [1, "#22D3EE"]],
                     template="plotly_dark", height=320
                 )
-                fig1.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                fig1.update_layout(
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter, sans-serif", color="#F1F3F5", size=11),
+                    xaxis=dict(gridcolor="rgba(34, 211, 238, 0.15)", showgrid=True),
+                    yaxis=dict(tickfont=dict(family="JetBrains Mono, monospace", color="#F1F3F5"))
+                )
                 st.plotly_chart(fig1, use_container_width=True)
             else:
                 st.info("No case files registered.")
@@ -457,10 +529,17 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
                 fig2 = px.imshow(
                     matrix_df,
                     labels=dict(x="Assigned Priority", y="Crime Category", color="Count"),
-                    color_continuous_scale="Plasma",
+                    color_continuous_scale=[[0, "#0F1115"], [0.5, "#F59E0B"], [1, "#EF4444"]],
                     template="plotly_dark", height=320
                 )
-                fig2.update_layout(margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                fig2.update_layout(
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter, sans-serif", color="#F1F3F5", size=11),
+                    xaxis=dict(tickfont=dict(family="JetBrains Mono, monospace", color="#F1F3F5")),
+                    yaxis=dict(tickfont=dict(family="JetBrains Mono, monospace", color="#F1F3F5"))
+                )
                 st.plotly_chart(fig2, use_container_width=True)
             else:
                 st.info("No heatmap data available.")
@@ -480,7 +559,15 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
                     title="Daily Incident Filing Volumes",
                     template="plotly_dark", height=240
                 )
-                fig_trend.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                fig_trend.update_traces(line=dict(color="#22D3EE", width=2), marker=dict(color="#22D3EE", size=6))
+                fig_trend.update_layout(
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter, sans-serif", color="#F1F3F5", size=11),
+                    xaxis=dict(gridcolor="rgba(34, 211, 238, 0.15)", showgrid=True, tickfont=dict(family="JetBrains Mono, monospace", color="#F1F3F5")),
+                    yaxis=dict(gridcolor="rgba(34, 211, 238, 0.15)", showgrid=True, tickfont=dict(family="JetBrains Mono, monospace", color="#F1F3F5"))
+                )
                 st.plotly_chart(fig_trend, use_container_width=True)
             else:
                 st.info("No trend data.")
@@ -499,8 +586,13 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
     # ----------------------------------------------------
     # TAB 2: CASE MANAGEMENT BOARD (Module 6)
     # ----------------------------------------------------
-    elif officer_tab == "🗂️ Case Management Board":
-        st.subheader("Incident Case files")
+    elif officer_tab == "Case Management Board":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Incident Case Files</h2>
+        </div>
+        """, unsafe_allow_html=True)
         
         # Priority filter tabs
         filter_priority = st.selectbox("Filter Priority", ["All", "High", "Medium", "Low"])
@@ -533,25 +625,25 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
 
                 if len(linked_cases_list) > 0:
                     has_repeat_offender = True
-                    match_desc = f"🚨 REPEAT OFFENDER WARNING: Posing entity is linked to other cases: {', '.join(set(linked_cases_list))}"
+                    match_desc = f"REPEAT OFFENDER WARNING: Posing entity is linked to other cases: {', '.join(set(linked_cases_list))}"
                 
                 # Build HTML Card
                 st.markdown(f"""
-                <div class="cyber-card" style="border-left: 5px solid {'#ef4444' if row['priority'] == 'High' else '#f59e0b' if row['priority'] == 'Medium' else '#3b82f6'};">
+                <div class="cyber-card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 1.15rem; font-weight: 700; color: #ffffff;">{row['case_id']} - {row['citizen_name']}</span>
+                        <span style="font-size: 1.15rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;">{row['case_id']} — {row['citizen_name']}</span>
                         <span>
                             <span class="priority-badge-{row['priority'].lower()}">{row['priority']}</span>
                             <span class="status-badge-{row['status'].lower().replace(' ', '')}">{row['status']}</span>
                         </span>
                     </div>
                     <div style="margin-top: 10px; font-size: 0.95rem;">
-                        <strong>Crime Category:</strong> <span style="color:#38bdf8;">{row['category']}</span> | 
-                        <strong>Risk Score:</strong> <span style="color:#f87171; font-weight:bold;">{row['risk_score']:.1f}/10</span> | 
-                        <strong>Assigned Officer:</strong> <span style="color:#e2e8f0;">{row['officer_name']}</span> | 
-                        <strong>Date:</strong> <span style="color:#a1a1aa;">{row['created_at']}</span>
+                        <strong>Category:</strong> <span style="color:#F1F5F9;">{row['category']}</span> | 
+                        <strong>Risk:</strong> <span style="color:#EF4444; font-weight:bold; font-family: 'JetBrains Mono', monospace;">{row['risk_score']:.1f}/10</span> | 
+                        <strong>Officer:</strong> <span style="font-family: 'JetBrains Mono', monospace;">{row['officer_name']}</span> | 
+                        <strong>Date:</strong> <span style="color:#94A3B8; font-family: 'JetBrains Mono', monospace;">{row['created_at']}</span>
                     </div>
-                    <p style="margin-top: 10px; color:#cbd5e1; font-style:italic;">"{row['complaint_desc']}"</p>
+                    <p style="margin-top: 10px; color:#94A3B8; font-style:italic;">"{row['complaint_desc']}"</p>
                     {f'<div class="warning-alert" style="margin: 8px 0 0 0; padding: 6px 12px; font-size: 0.85rem; font-weight:600;">{match_desc}</div>' if has_repeat_offender else ''}
                 </div>
                 """, unsafe_allow_html=True)
@@ -583,8 +675,13 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
     # ----------------------------------------------------
     # TAB 3: COMPLAINT ANALYZER (Module 1)
     # ----------------------------------------------------
-    elif officer_tab == "🔍 Cyber Crime Complaint Analyzer":
-        st.subheader("Ad-hoc Complaint NLP Analyzer")
+    elif officer_tab == "Cyber Crime Complaint Analyzer":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Ad-hoc Complaint NLP Analyzer</h2>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("Input a complaint description below to perform legal, category, and severity classification using trained NLP pipelines.")
         
         sample_complaint = st.text_area("Paste Complaint Description", height=150)
@@ -632,8 +729,13 @@ def _render_officer_tabs(officer_tab, df_cases, df_cases_filtered, df_suspects):
     # ----------------------------------------------------
     # TAB 4: SCAM MESSAGE DETECTOR (Module 2)
     # ----------------------------------------------------
-    elif officer_tab == "💬 Scam Message Detector":
-        st.subheader("SMS / WhatsApp / Message Forensic Scanner")
+    elif officer_tab == "Scam Message Detector":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">SMS / WhatsApp / Message Forensic Scanner</h2>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("Evaluate incoming texts, SMS, or WhatsApp threads for scam probability and urgent threats.")
         
         msg_text = st.text_area("Paste message contents", height=100)
@@ -700,13 +802,18 @@ Message text: "{msg_text}"
     # ----------------------------------------------------
     # TAB 5: PHISHING URL FORENSIC LAB (Module 3)
     # ----------------------------------------------------
-    elif officer_tab == "🔗 Phishing URL Forensic Lab":
+    elif officer_tab == "Phishing URL Forensic Lab":
         import json
-        st.subheader("Digital Phishing Analysis Laboratory")
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Digital Phishing Analysis Laboratory</h2>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("Enter an address (URL) to run structural, domain, and ML forensic checks.")
         
         # Expander for Admin Retraining Panel
-        with st.expander("🛠️ Model Management & Retraining Admin Panel"):
+        with st.expander("Model Management & Retraining Admin Panel"):
             st.markdown("### Forensic Model Control Panel")
             
             # Show active model metrics if available
@@ -807,50 +914,41 @@ Message text: "{msg_text}"
                 recommended_action = brief["recommended_action"]
                 
                 # Set badge styles
-                if threat_level == "Safe":
-                    badge_style = "background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);"
-                elif threat_level == "Low Risk":
-                    badge_style = "background-color: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4);"
-                elif threat_level == "Suspicious":
-                    badge_style = "background-color: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);"
-                elif threat_level == "High Risk":
-                    badge_style = "background-color: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);"
-                else:
-                    badge_style = "background-color: rgba(220, 38, 38, 0.25); color: #f87171; border: 1px solid #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);"
+                threat_class = "threat-badge-" + threat_level.lower().replace(" risk", "").replace(" ", "")
                     
                 # Generate investigation notes based on components
                 notes = []
                 if is_whitelisted:
-                    notes.append("🟢 **Domain Reputation:** Registered domain matches a whitelisted trusted domain.")
+                    notes.append("[SAFE] **Domain Reputation:** Registered domain matches a whitelisted trusted domain.")
                 elif components["brand_spoof_score"] >= 0.70:
-                    notes.append(f"❌ **Domain Reputation:** BRAND SPOOFING DETECTED! Similarity: **{components['brand_spoof_score']*100:.1f}%**")
+                    notes.append(f"[CRITICAL] **Domain Reputation:** BRAND SPOOFING DETECTED! Similarity: **{components['brand_spoof_score']*100:.1f}%**")
                 else:
-                    notes.append("🟡 **Domain Reputation:** Untrusted domain (not in whitelist, no direct brand match).")
+                    notes.append("[WARNING] **Domain Reputation:** Untrusted domain (not in whitelist, no direct brand match).")
                     
                 if components["protocol_score"] == 0.0:
-                    notes.append("🟢 **Transport Security:** Secure Transport Layer (HTTPS) is active.")
+                    notes.append("[SAFE] **Transport Security:** Secure Transport Layer (HTTPS) is active.")
                 elif components["protocol_score"] == 0.5:
-                    notes.append("❌ **Transport Security:** MISSING HTTPS! Plaintext HTTP transport detected.")
+                    notes.append("[CRITICAL] **Transport Security:** MISSING HTTPS! Plaintext HTTP transport detected.")
                 else:
-                    notes.append("❌ **Transport Security:** MALFORMED PROTOCOL ANOMALY! Protocol prefix is malformed.")
+                    notes.append("[CRITICAL] **Transport Security:** MALFORMED PROTOCOL ANOMALY! Protocol prefix is malformed.")
                     
                 if features[6] > 0:
-                    notes.append("❌ **Hostname Format:** URL uses raw IP address instead of domain hostname.")
+                    notes.append("[CRITICAL] **Hostname Format:** URL uses raw IP address instead of domain hostname.")
                 else:
-                    notes.append("🟢 **Hostname Format:** Standard domain hostname format.")
+                    notes.append("[SAFE] **Hostname Format:** Standard domain hostname format.")
                     
                 if features[11] > 0:
-                    notes.append(f"❌ **Keywords Scan:** Detected {int(features[11])} suspicious harvesting keywords.")
+                    notes.append(f"[CRITICAL] **Keywords Scan:** Detected {int(features[11])} suspicious harvesting keywords.")
                 else:
-                    notes.append("🟢 **Keywords Scan:** No phishing keywords found.")
+                    notes.append("[SAFE] **Keywords Scan:** No phishing keywords found.")
                     
                 if features[10] > 4.2:
-                    notes.append(f"❌ **Entropy Scan:** High domain character entropy ({features[10]:.2f}). Potential algorithmically generated domain (DGA).")
+                    notes.append(f"[CRITICAL] **Entropy Scan:** High domain character entropy ({features[10]:.2f}). Potential algorithmically generated domain (DGA).")
                 else:
-                    notes.append(f"🟢 **Entropy Scan:** Normal domain character entropy ({features[10]:.2f}).")
+                    notes.append(f"[SAFE] **Entropy Scan:** Normal domain character entropy ({features[10]:.2f}).")
                     
                 if "xn--" in parsed_dict["hostname"].lower():
-                    notes.append("❌ **Unicode Scan:** IDN Homograph unicode obfuscation detected.")
+                    notes.append("[CRITICAL] **Unicode Scan:** IDN Homograph unicode obfuscation detected.")
                     
                 # Evidence Summary
                 evidence_summary = f"""--- DIGITAL FORENSIC SITE ANALYSIS REPORT ---
@@ -879,37 +977,42 @@ Structural Evidence Vector:
 
                 # Render Brief Card
                 st.markdown("<div class='cyber-card'>", unsafe_allow_html=True)
-                st.subheader("Phishing Investigation Brief")
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+                    <div class="icon-badge"></div>
+                    <h3 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Phishing Investigation Brief</h3>
+                </div>
+                """, unsafe_allow_html=True)
                 
                 st.markdown(f"""
                 <div style='display: flex; gap: 15px; align-items: center; margin-bottom: 20px;'>
-                    <div style='{badge_style} padding: 5px 15px; border-radius: 9999px; font-weight: 700; font-size: 1.1rem;'>
+                    <div class='{threat_class}'>
                         THREAT LEVEL: {threat_level.upper()}
                     </div>
                     <div style='font-size: 1.1rem;'>
-                        Final Risk Score: <strong style='color: #ffffff;'>{risk_percentage:.1f}%</strong>
+                        Final Risk Score: <strong style='color: var(--color-text);'>{risk_percentage:.1f}%</strong>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
                 
                 col_left, col_right = st.columns(2)
                 with col_left:
-                    st.write("#### 🔍 Triggered Forensic Rules")
+                    st.write("#### Triggered Forensic Rules")
                     if rules_triggered:
                         for rule in rules_triggered:
                             st.markdown(rule)
                     else:
-                        st.success("🟢 No phishing rules triggered.")
+                        st.success("No phishing rules triggered.")
                         
-                    st.write("#### 📝 Forensic Investigation Notes")
+                    st.write("#### Forensic Investigation Notes")
                     for n in notes:
                         st.markdown(n)
                         
-                    st.write("#### 🛡️ Recommended Enforcement Action")
+                    st.write("#### Recommended Enforcement Action")
                     st.info(recommended_action)
                     
                 with col_right:
-                    st.write("#### 📊 5-Component Forensic Contribution")
+                    st.write("#### 5-Component Forensic Contribution")
                     
                     st.write(f"Protocol Validation ({components['protocol_score']*100:.0f}%)")
                     st.progress(float(components["protocol_score"]))
@@ -926,15 +1029,20 @@ Structural Evidence Vector:
                     st.write(f"ML Classifier ({components['ml_score']*100:.0f}%)")
                     st.progress(float(components["ml_score"]))
                     
-                    st.write("#### 📄 Digital Forensic Evidence Summary")
+                    st.write("#### Digital Forensic Evidence Summary")
                     st.markdown(f"<div class='evidence-terminal'>{evidence_summary}</div>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
     # ----------------------------------------------------
     # TAB 6: SUSPECT INTELLIGENCE NETWORK (Module 5)
     # ----------------------------------------------------
-    elif officer_tab == "👤 Suspect Intelligence Network":
-        st.subheader("Suspect Relationship Mapping & Repeat Offenders")
+    elif officer_tab == "Suspect Intelligence Network":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Suspect Relationship Mapping & Repeat Offenders</h2>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("Analyze and visualize correlations between telephone numbers, UPI addresses, URLs, and case files.")
         
         # 1. Show Repeat Offender List
@@ -976,7 +1084,7 @@ Structural Evidence Vector:
                 
             edge_trace = go.Scatter(
                 x=edge_x, y=edge_y,
-                line=dict(width=1, color='#475569'),
+                line=dict(width=1, color='#222530'),
                 hoverinfo='none',
                 mode='lines'
             )
@@ -995,18 +1103,17 @@ Structural Evidence Vector:
                 node_info = G.nodes[node]
                 if node_info["type"] == "case":
                     node_text.append(f"Case File: {node}")
-                    node_color.append("#06b6d4") # Blue for Cases
+                    node_color.append("#22D3EE")
                     node_size.append(18)
                 else:
                     node_text.append(f"{node_info['ev_type']}: {node_info['val']}")
-                    # If this suspect is linked to multiple cases, paint red
                     links = len(list(G.neighbors(node)))
                     if links > 1:
-                        node_color.append("#ef4444") # Red for repeat offender
+                        node_color.append("#EF4444")
                         node_size.append(24)
                         node_text[-1] += f" (LINKED TO {links} CASES)"
                     else:
-                        node_color.append("#fbbf24") # Orange for single suspect
+                        node_color.append("#F59E0B")
                         node_size.append(14)
             
             node_trace = go.Scatter(
@@ -1019,18 +1126,21 @@ Structural Evidence Vector:
                     showscale=False,
                     color=node_color,
                     size=node_size,
-                    line=dict(width=2, color='#ffffff')
+                    line=dict(width=2, color='#070809')
                 )
             )
             
             fig_graph = go.Figure(
                 data=[edge_trace, node_trace],
                 layout=go.Layout(
-                    title="Intelligence Relations Matrix (Cyan=Cases, Yellow=Suspects, Red=Repeat Suspects)",
+                    title="Intelligence Relations Matrix (Cyan=Cases, Amber=Suspects, Red=Repeat Suspects)",
                     template="plotly_dark",
                     showlegend=False,
                     hovermode='closest',
                     margin=dict(b=20, l=5, r=5, t=40),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter, sans-serif", color="#F1F3F5"),
                     xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                     yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
                 )
@@ -1043,8 +1153,13 @@ Structural Evidence Vector:
     # ----------------------------------------------------
     # TAB 7: AI FORENSIC ASSISTANT (Module 8)
     # ----------------------------------------------------
-    elif officer_tab == "🤖 AI Legal & Forensic Assistant":
-        st.subheader("AI Automated Case Investigation Briefing")
+    elif officer_tab == "AI Legal & Forensic Assistant":
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div class="icon-badge"></div>
+            <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">AI Automated Case Investigation Briefing</h2>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("Generates comprehensive case summaries, legal sections (IPC/IT Act), evidence collections, and investigation logs.")
         
         if df_cases.empty:
@@ -1126,39 +1241,10 @@ Cyber Crime Police
                 st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ==========================================
-# LOGIN PAGE
-# ==========================================
 def render_login_page():
-    st.markdown("""
-    <div class='login-container'>
-        <div class='login-header'>
-            <span class='lock-icon'>🛡️</span>
-            <h1>CyberShield</h1>
-            <p>Police Intelligence Portal</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    col_pad1, col_form, col_pad2 = st.columns([1, 2, 1])
-    with col_form:
-        username = st.text_input("Username", placeholder="Enter your username", key="login_user")
-        password = st.text_input("Password", type="password", placeholder="Enter your password", key="login_pass")
-
-        if st.button("🔐 Secure Login", type="primary", use_container_width=True):
-            success, message = auth.login_user(username, password)
-            if success:
-                st.rerun()
-            else:
-                st.markdown(f"<div class='login-error'>{message}</div>", unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center; color:#64748b; font-size:0.8rem;'>Default Admin: <code>admin</code> / <code>CyberShield@2026</code><br>Default Officer: <code>insp.vikram</code> / <code>Officer@2026</code></p>", unsafe_allow_html=True)
+    auth_ui.render_auth_page()
 
 
-# ==========================================
-# AUTHENTICATED SIDEBAR
-# ==========================================
 def render_authenticated_sidebar():
     user = auth.get_current_user()
     role = user["role"]
@@ -1172,8 +1258,12 @@ def render_authenticated_sidebar():
     </div>
     """, unsafe_allow_html=True)
 
-    if st.sidebar.button("🚪 Secure Logout", use_container_width=True):
-        auth.logout_user()
+    if st.sidebar.button("Secure Logout", use_container_width=True):
+        auth_ui.handle_logout()
+        st.rerun()
+
+    if st.sidebar.button("Logout All Devices", use_container_width=True):
+        auth_ui.handle_logout_all()
         st.rerun()
 
     st.sidebar.markdown("---")
@@ -1183,30 +1273,39 @@ def render_authenticated_sidebar():
 # ADMIN PORTAL
 # ==========================================
 def render_admin_portal():
-    st.markdown("<h1>🛡️ CyberShield Admin Command Center</h1>", unsafe_allow_html=True)
+    if not auth.require_role(["admin"]):
+        return
+
+    st.markdown("""
+    <div class="hero-glow-container">
+        <div class="icon-badge hero-icon"></div>
+        <h1 class="hero-title">Cyber<span style="color: var(--color-accent);">Shield</span></h1>
+        <div class="tagline">Admin Command Center</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     admin_tab = st.sidebar.radio(
         "Admin Modules",
         [
-            "📊 Executive Dashboard",
-            "🗂️ Case Management Board",
-            "🔍 Cyber Crime Complaint Analyzer",
-            "💬 Scam Message Detector",
-            "🔗 Phishing URL Forensic Lab",
-            "👤 Suspect Intelligence Network",
-            "🤖 AI Legal & Forensic Assistant",
-            "👥 User Management",
-            "📋 Audit Logs",
-            "🔑 Case Assignments"
+            "Executive Dashboard",
+            "Case Management Board",
+            "Cyber Crime Complaint Analyzer",
+            "Scam Message Detector",
+            "Phishing URL Forensic Lab",
+            "Suspect Intelligence Network",
+            "AI Legal & Forensic Assistant",
+            "User Management",
+            "Audit Logs",
+            "Case Assignments"
         ]
     )
 
     # Admin-only tabs
-    if admin_tab == "👥 User Management":
+    if admin_tab == "User Management":
         render_user_management()
-    elif admin_tab == "📋 Audit Logs":
+    elif admin_tab == "Audit Logs":
         render_audit_logs()
-    elif admin_tab == "🔑 Case Assignments":
+    elif admin_tab == "Case Assignments":
         render_case_assignments()
     else:
         # Reuse officer portal logic for shared operational tabs
@@ -1223,7 +1322,12 @@ def _render_officer_tab_content(officer_tab):
 
 
 def render_user_management():
-    st.subheader("User Account Management")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+        <div class="icon-badge"></div>
+        <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">User Account Management</h2>
+    </div>
+    """, unsafe_allow_html=True)
     df_users = db.get_all_users()
     if not df_users.empty:
         st.dataframe(df_users, use_container_width=True)
@@ -1263,7 +1367,12 @@ def render_user_management():
 
 
 def render_audit_logs():
-    st.subheader("Security Audit Trail")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+        <div class="icon-badge"></div>
+        <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Security Audit Trail</h2>
+    </div>
+    """, unsafe_allow_html=True)
     df_logs = db.get_audit_logs(500)
     if df_logs.empty:
         st.info("No audit events recorded.")
@@ -1275,7 +1384,12 @@ def render_audit_logs():
 
 
 def render_case_assignments():
-    st.subheader("Case-Officer Assignment Control")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+        <div class="icon-badge"></div>
+        <h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 1.75rem; font-weight: 700; color: var(--color-text);">Case-Officer Assignment Control</h2>
+    </div>
+    """, unsafe_allow_html=True)
     df_assignments = db.get_case_assignments()
     if not df_assignments.empty:
         st.dataframe(df_assignments, use_container_width=True)
@@ -1300,31 +1414,31 @@ def render_case_assignments():
 
 
 
-# ==========================================
-# APP MAIN CONTROL FLOW
-# ==========================================
 def main():
-    # Initialize auth session
-    auth.init_session()
-    auth.check_session_timeout()
+    env = os.environ.get("ENVIRONMENT", "dev")
+    if env == "prod":
+        missing = [v for v in ["PRIVATE_KEY_PATH", "PUBLIC_KEY_PATH", "DB_PATH", "COOKIE_SECRET"]
+                   if not os.environ.get(v)]
+        if missing:
+            st.error(f"Production mode requires these environment variables: {', '.join(missing)}")
+            st.stop()
 
-    # Load CSS
+    auth_ui.check_session()
     load_css()
 
-    # Sidebar branding
-    st.sidebar.markdown("<h2 style='text-align: center; color: #06b6d4; margin-bottom: 0;'>🛡️ CyberShield</h2>", unsafe_allow_html=True)
-    st.sidebar.markdown("<p style='text-align: center; color: #64748b; font-size: 0.85rem; margin-top: 0;'>POLICE INTELLIGENCE PORTAL</p>", unsafe_allow_html=True)
-    st.sidebar.markdown("---")
-
-    # AUTH GATE — if not logged in, show login page only
     if not auth.is_authenticated():
         render_login_page()
-        st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("<p style='text-align: center; color: #475569; font-size: 0.75rem;'>CyberShield v3.0 Police Edition<br>© 2026 Ministry of Law Enforcement</p>", unsafe_allow_html=True)
         return
 
-    # AUTHENTICATED — show user info + logout in sidebar
+    st.sidebar.markdown("""
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; margin-bottom: 16px;">
+        <div class="icon-badge" style="display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; font-size: 20px;"></div>
+        <div style="font-family: 'Space Grotesk', sans-serif; font-size: 1.5rem; font-weight: 700; color: var(--color-text); line-height: 1;">Cyber<span style="color: var(--color-accent);">Shield</span></div>
+        <div class="tagline" style="font-size: 10px; margin-top: 2px;">Police Intelligence Portal</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.sidebar.markdown("---")
+
     render_authenticated_sidebar()
 
     role = auth.get_current_role()
@@ -1339,7 +1453,7 @@ def main():
     # Footer
     st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
-    st.sidebar.markdown("<p style='text-align: center; color: #475569; font-size: 0.75rem;'>CyberShield v3.0 Police Edition<br>© 2026 Ministry of Law Enforcement</p>", unsafe_allow_html=True)
+    st.sidebar.markdown('<p style="text-align: center; color: #94A3B8; font-size: 0.7rem; font-family: JetBrains Mono, monospace;">CyberShield v3.0 Police Edition<br>© 2026 Ministry of Law Enforcement</p>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
